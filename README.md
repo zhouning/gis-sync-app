@@ -1,66 +1,85 @@
-# GIS Real-time Synchronization App
+# GIS Real-time Sync App
 
-This project provides a robust, streaming-based solution for real-time GIS data synchronization and transformation. It leverages **Apache Flink** for stream processing and **Apache Sedona** for high-performance spatial SQL operations.
+基于 **Apache Flink** + **Apache Sedona** 的 GIS 实时数据同步与坐标转换应用。
 
-## 🚀 Features
+## 功能特性
 
-*   **Real-time Coordinate Transformation**: Converts WGS84 (GPS) coordinates to Web Mercator (EPSG:3857) on the fly.
-*   **Coordinate Validation**: Filters out invalid coordinates (out-of-range, zero values) before transformation.
-*   **Geofence Spatial Join**: Real-time point-in-polygon detection with TUMBLE window aggregation.
-*   **Flink CDC Direct Connect**: Captures PostGIS changes without a separate Kafka/Debezium deployment.
-*   **High Performance**: Kryo serialization for JTS Geometry types, distributed spatial indexes and native Flink operators.
-*   **Production Ready**: Enhanced Checkpointing (Exactly-Once, tolerant failures, min pause), JDBC Sink reference.
-*   **Heterogeneous Support**: Designed to bridge PostGIS, Oracle Spatial, and other spatial data sources.
+- **实时坐标转换**：WGS84 (EPSG:4326) → Web Mercator (EPSG:3857) 实时投影转换
+- **坐标校验**：自动过滤超范围、零值等无效坐标
+- **地理围栏判断**：基于 `ST_Contains` + TUMBLE 窗口的实时点面关系检测与区域密度统计
+- **Flink CDC 直连**：内嵌 Debezium 直连 PostGIS，无需独立部署 Kafka/Debezium
+- **高性能序列化**：为 JTS Geometry 注册 Kryo 序列化器，减少约 2/3 序列化开销
+- **生产就绪**：支持 Exactly-Once 语义、Checkpoint 容错、JDBC Sink 输出
 
-## 🛠️ Prerequisites
+## 技术栈
 
-*   **Java**: JDK 11 or higher (Tested on JDK 17)
-*   **Maven**: 3.8.x or higher
-*   **Flink Cluster**: (Optional for local testing) Flink 1.19+
+| 组件 | 版本 | 说明 |
+| :--- | :--- | :--- |
+| Apache Flink | 1.19.0 | 流处理引擎 |
+| Apache Sedona | 1.8.1 | 分布式空间 SQL |
+| GeoTools | 30.2 | CRS 管理与投影转换 |
+| Flink CDC | 3.0.1 | PostGIS 变更捕获 |
+| Java | 11+ | 开发语言 |
 
-## 📥 Installation
+## 快速开始
 
-1.  **Clone the repository**:
-    ```bash
-    git clone <repository-url>
-    cd gis-sync-app
-    ```
+### 环境要求
 
-2.  **Build the project**:
-    This will create a lightweight JAR for development and a shaded JAR for production deployment.
-    ```bash
-    mvn clean package
-    ```
+- JDK 11+（推荐 JDK 17）
+- Maven 3.8+
 
-## 🏃‍♂️ Usage
+### 构建
 
-### Local Execution (IDE)
-You can run the `GisStreamingJob` directly in your IDE (IntelliJ/Eclipse). It uses an embedded Flink environment.
+```bash
+git clone https://github.com/zhouning/gis-sync-app.git
+cd gis-sync-app
+mvn clean package
+```
 
-1.  Open `src/main/java/com/example/gis/GisStreamingJob.java`.
-2.  Run the `main()` method.
-3.  Observe the console output for transformed spatial data.
+### 运行
 
-### Available Jobs
+**本地运行（IDE）**
 
-| Job Class | Description |
-| :--- | :--- |
-| `GisStreamingJob` | 核心坐标转换 Job（datagen source → WGS84 to Mercator → print/JDBC） |
-| `GisStreamingJobCdc` | Flink CDC 直连 PostGIS 示例（无需 Kafka/Debezium 独立部署） |
-| `GeofenceStreamingJob` | 地理围栏空间 Join 示例（ST_Contains + TUMBLE 窗口密度统计） |
+直接在 IDE 中运行 `GisStreamingJob.main()`，使用内嵌 Flink 环境。
 
-### Cluster Deployment
-To submit the job to a running Flink cluster:
+**集群部署**
 
 ```bash
 ./bin/flink run -c com.example.gis.GisStreamingJob target/gis-sync-app-1.0-SNAPSHOT.jar
 ```
 
-## ⚙️ Configuration
+### 测试
 
-The current version uses a `datagen` source for demonstration. To connect to real data sources, modify the `CREATE TABLE` SQL in `GisStreamingJob.java`:
+```bash
+mvn test
+```
 
-**Example: Reading from Kafka**
+## 作业说明
+
+| 作业类 | 说明 |
+| :--- | :--- |
+| `GisStreamingJob` | 核心坐标转换作业：datagen source → WGS84 to Mercator → print/JDBC |
+| `GisStreamingJobCdc` | Flink CDC 直连 PostGIS，无需独立 Kafka/Debezium |
+| `GeofenceStreamingJob` | 地理围栏空间 Join：ST_Contains + TUMBLE 窗口密度统计 |
+
+## 架构概览
+
+```
+PostGIS ──→ Flink CDC ──→ Flink + Sedona SQL ──→ 目标数据库
+                              │
+                    ┌─────────┴─────────┐
+                    │  坐标校验          │
+                    │  ST_Point 构建     │
+                    │  ST_SetSRID(4326)  │
+                    │  ST_Transform(3857)│
+                    │  ST_AsText 输出    │
+                    └───────────────────┘
+```
+
+## 配置示例
+
+默认使用 `datagen` 数据源演示。接入 Kafka 数据源示例：
+
 ```sql
 CREATE TABLE source_geodata (
     id INT,
@@ -74,21 +93,16 @@ CREATE TABLE source_geodata (
 )
 ```
 
-## 🧪 Testing
+## 常见问题
 
-Run the included unit tests to verify spatial logic:
+- **`NoClassDefFoundError: org/geotools/...`**：确保使用 shaded JAR 部署
+- **Windows 编码问题**：终端执行 `chcp 65001` 切换 UTF-8
 
-```bash
-mvn test
-```
+## 设计文档
 
-## ⚠️ Troubleshooting
+- [DESIGN.md](DESIGN.md)（English）
+- [DESIGN_CN.md](DESIGN_CN.md)（中文）
 
-*   **`NoClassDefFoundError: org/geotools/...`**: Ensure you are using the `shaded` JAR (`gis-sync-app-1.0-SNAPSHOT.jar`) which bundles necessary GeoTools dependencies.
-*   **Encoding Issues**: If you see "Illegal character" errors on Windows, ensure your terminal uses UTF-8 (`chcp 65001`) or rely on the `mvn package` command which handles encoding correctly.
+## License
 
-## 📚 Technical Design
-
-For a deep dive into the architecture, CDC patterns, and trade-off analysis, please refer to:
-*   [DESIGN.md](DESIGN.md) (English)
-*   [DESIGN_CN.md](DESIGN_CN.md) (Chinese)
+MIT

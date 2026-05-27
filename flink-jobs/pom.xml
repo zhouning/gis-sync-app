@@ -187,13 +187,21 @@
             <version>1.20.4</version>
             <scope>test</scope>
         </dependency>
-        <!-- Testcontainers 1.20.x 用了 commons-lang3 3.18+ 的 API：
-             ArrayFill (3.13+) / SystemProperties.getUserName(String) (3.18+) 等。
-             Flink 测试 classpath 上某个依赖会拽进更老版本，需显式 override。-->
+        <!-- Testcontainers 1.20.x 用了较新的 commons-lang3 / commons-io API，
+             Flink 测试 classpath 上某个依赖会拽进更老版本，需显式 override。
+             ArrayFill (lang3 3.13+), SystemProperties.getUserName(String) (lang3 3.18+),
+             FileTimes.toUnixTime(FileTime) (io 2.12+) 等。
+             一次性把两个 commons 都升到一个安全的较新版本，避免后续打地鼠。-->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
             <version>3.18.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>2.16.1</version>
             <scope>test</scope>
         </dependency>
         <dependency>

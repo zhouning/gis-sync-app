@@ -71,7 +71,8 @@ EOF
     -v gis-maven-cache:/root/.m2 \
     -w /workspace \
     maven:3.9-eclipse-temurin-17 \
-    mvn -B dependency:copy-dependencies -DincludeScope=runtime -Dsilent=true >/dev/null
+    sh -c "mvn -B dependency:copy-dependencies -DincludeScope=runtime -Dsilent=true >/dev/null \
+       && chown -R $(id -u):$(id -g) /workspace/target/dependency"
 
   # 拷贝时跳过与 Flink lib 已有 jar 冲突的版本
   for f in "$TMP_POM/dep"/*.jar; do
@@ -83,7 +84,7 @@ EOF
     esac
     cp "$f" "$LIB_DIR/$name"
   done
-  rm -rf "$TMP_POM"
+  rm -rf "$TMP_POM" 2>/dev/null || sudo rm -rf "$TMP_POM"
   touch "$SR_MARKER"
 fi
 

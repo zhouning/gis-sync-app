@@ -76,7 +76,10 @@ public final class TestEnvironment {
 
         kafka = new ConfluentKafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
                 .withNetwork(network)
-                .withNetworkAliases("kafka");
+                .withNetworkAliases("kafka")
+                // GitHub Actions runner 在并发 IT 跑多个 docker 容器时
+                // Kafka KRaft 启动有时超过默认 60s，给 3 分钟兜底
+                .withStartupTimeout(Duration.ofMinutes(3));
 
         srcPg.start();
         dstPg.start();

@@ -1,66 +1,117 @@
 version: 2
 updates:
-  # Maven 多模块（root pom.xml 是 aggregator，dependabot 会发现 flink-jobs 和 backend 各自的 pom）
+  # =====================================================================
+  # Maven /flink-jobs：核心运行时（Flink 1.19 + Sedona 1.9 + GeoTools 30）
+  # 严禁 major 跳跃 —— 整套都是版本相互锁定的：
+  #   Sedona 1.9.0 在 pom 里钉死 flink.version=1.19.0
+  #   Flink CDC 3.5.0 是最后兼容 Flink 1.19 的版本（3.6+ 砍了 1.19）
+  # 任何 flink/sedona/geotools/CDC 的 major 升级都需要人工评估整套迁移。
+  # =====================================================================
   - package-ecosystem: maven
     directory: "/flink-jobs"
     schedule:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # 全局 ignore：拦掉所有关键依赖的 major 升级。patch/minor 通过分组 PR 推送。
+    ignore:
+      - dependency-name: "org.apache.flink:*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "org.apache.sedona:*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "org.geotools:*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "com.ververica:*"
+        update-types: ["version-update:semver-major"]
+      # JUnit 6 要 Java 17，flink-jobs 是 Java 11，不能升 6
+      - dependency-name: "org.junit.jupiter:*"
+        update-types: ["version-update:semver-major"]
     groups:
       flink-and-connectors:
         patterns:
           - "org.apache.flink:*"
+        update-types: ["minor", "patch"]
       sedona:
         patterns:
           - "org.apache.sedona:*"
+        update-types: ["minor", "patch"]
       geotools:
         patterns:
           - "org.geotools:*"
+        update-types: ["minor", "patch"]
       test:
         dependency-type: development
+        update-types: ["minor", "patch"]
 
+  # =====================================================================
+  # Maven /backend：Spring Boot 3.3 + Confluent client 7.7
+  # =====================================================================
   - package-ecosystem: maven
     directory: "/backend"
     schedule:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      # Spring Boot 4 是大改版（配置 / API / 自动装配机制都有破坏性变更）
+      - dependency-name: "org.springframework.boot:*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "org.springframework:*"
+        update-types: ["version-update:semver-major"]
+      # Confluent 8 跨 major 需评估 schema-registry 兼容性
+      - dependency-name: "io.confluent:*"
+        update-types: ["version-update:semver-major"]
     groups:
       spring-boot:
         patterns:
           - "org.springframework.boot:*"
           - "org.springframework:*"
           - "org.springframework.kafka:*"
+        update-types: ["minor", "patch"]
       confluent:
         patterns:
           - "io.confluent:*"
+        update-types: ["minor", "patch"]
       test:
         dependency-type: development
+        update-types: ["minor", "patch"]
 
-  # 前端
+  # =====================================================================
+  # 前端 npm：React/antd/MapLibre 等
+  # =====================================================================
   - package-ecosystem: npm
     directory: "/frontend"
     schedule:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      # antd 6 / MapLibre 5 / recharts 3 都有破坏性变更，手工评估再升
+      - dependency-name: "antd"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "maplibre-gl"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "recharts"
+        update-types: ["version-update:semver-major"]
     groups:
       react:
         patterns:
           - "react"
           - "react-dom"
           - "@types/react*"
+        update-types: ["minor", "patch"]
       antd:
         patterns:
           - "antd"
+        update-types: ["minor", "patch"]
       build-tools:
         patterns:
           - "vite"
           - "@vitejs/*"
           - "typescript"
+        update-types: ["minor", "patch"]
 
-  # GitHub Actions 本身
+  # GitHub Actions 本身（major 升级一般无破坏性，让它升）
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

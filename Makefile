@@ -170,6 +170,15 @@ smoke:
 smoke-keep:
 	bash scripts/smoke.sh --keep
 
+# 持续生成模拟同步流量，让看板看到实时变化（Ctrl-C 停）
+# INTERVAL（秒，默认 2）/ DURATION（秒，默认 0=无限）可覆盖
+demo-traffic:
+	bash scripts/demo-traffic.sh
+
+# 快速密集流量（看板更"活"）
+demo-traffic-fast:
+	INTERVAL=1 bash scripts/demo-traffic.sh
+
 # 取消所有 RUNNING 作业
 cancel-all:
 	@for jid in $$(curl -s http://localhost:8081/jobs | python3 -c "import json,sys;print(' '.join(j['id'] for j in json.load(sys.stdin)['jobs'] if j['status']=='RUNNING'))"); do \

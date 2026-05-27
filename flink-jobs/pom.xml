@@ -148,17 +148,17 @@
         <dependency>
             <groupId>org.geotools</groupId>
             <artifactId>gt-main</artifactId>
-            <version>30.2</version>
+            <version>30.5</version>
         </dependency>
         <dependency>
             <groupId>org.geotools</groupId>
             <artifactId>gt-epsg-hsql</artifactId>
-            <version>30.2</version>
+            <version>30.5</version>
         </dependency>
         <dependency>
             <groupId>org.geotools</groupId>
             <artifactId>gt-referencing</artifactId>
-            <version>30.2</version>
+            <version>30.5</version>
         </dependency>
 
         <!-- Test Dependencies -->

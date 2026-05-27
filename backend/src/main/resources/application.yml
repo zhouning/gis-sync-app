@@ -1,0 +1,49 @@
+server:
+  port: 8090
+  shutdown: graceful
+
+spring:
+  application:
+    name: gis-sync-backend
+  datasource:
+    # 默认连目标库（看板查询基本都在 dst）
+    url: jdbc:postgresql://${PG_DST_HOST:localhost}:${PG_DST_PORT:5433}/${PG_DST_DB:geodb_dst}
+    username: ${PG_DST_USER:postgres}
+    password: ${PG_DST_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 5000
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+gis:
+  # 用于查源库（复制槽监控）
+  source-db:
+    url: jdbc:postgresql://${PG_SRC_HOST:localhost}:${PG_SRC_PORT:5432}/${PG_SRC_DB:geodb_src}
+    username: ${PG_SRC_USER:postgres}
+    password: ${PG_SRC_PASSWORD:postgres}
+  flink:
+    rest-url: ${FLINK_REST:http://localhost:8081}
+  kafka:
+    cdc-topic: ${CDC_TOPIC:spatial-data-cdc}
+    dlq-topic: ${DLQ_TOPIC:spatial-data-dlq}
+    schema-registry-url: ${SR_URL:http://localhost:8082}
+    # 后端订阅 CDC topic 给前端推流：用 random group id 让多个后端实例各拿一份全量
+    ws-consumer-group: gis-backend-ws-${random.uuid}
+
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.springframework.kafka: INFO
+    com.example.gis: INFO

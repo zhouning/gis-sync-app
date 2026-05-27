@@ -1,0 +1,498 @@
+services:
+  # ============== 源库 (业务库) ==============
+  postgis-src:
+    image: imresamu/postgis:16-3.4
+    container_name: gis-postgis-src
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - shared_preload_libraries=postgis-3
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: geodb_src
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init-src.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - postgis-src-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d geodb_src"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ============== 目标库 (同步落地库) ==============
+  postgis-dst:
+    image: imresamu/postgis:16-3.4
+    container_name: gis-postgis-dst
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: geodb_dst
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./init-dst.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - postgis-dst-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d geodb_dst"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ============== Kafka (KRaft 单节点) ==============
+  # 7.7.x 对应 Apache Kafka 3.7，KRaft 已经 GA，去掉了 ZooKeeper 依赖
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: gis-kafka
+    ports:
+      - "9092:9092"     # 容器外（host）连接用
+      - "9094:9094"     # 容器内部其他服务连接用（避免 advertised listener 冲突）
+    environment:
+      # KRaft 模式：单节点同时担任 broker + controller
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # listeners
+      #   PLAINTEXT_HOST  → 暴露给 host (localhost:9092)
+      #   PLAINTEXT       → 容器网络内部 (kafka:9094)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9094,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # 单节点开发用：副本 / ISR 都是 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"   # 显式建 topic，避免 typo 自动创建乱
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"      # 任意 22 char base64，固定即可
+
+      # 日志/性能
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # ============== topic 初始化（一次性）==============
+  # 用 cp-kafka 镜像跑一次性脚本，幂等创建本项目所需的 3 个 topic
+  kafka-init:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: gis-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        BS=kafka:9094
+        for spec in \
+          "spatial-data-cdc:6:604800000" \
+          "spatial-data-dlq:3:1209600000" \
+          "spatial-sync-metrics:3:259200000"; do
+          IFS=: read -r topic parts retention <<<"$$spec"
+          kafka-topics --bootstrap-server $$BS --create --if-not-exists \
+            --topic "$$topic" --partitions "$$parts" --replication-factor 1 \
+            --config retention.ms=$$retention
+        done
+        echo "--- topics ---"
+        kafka-topics --bootstrap-server $$BS --list
+    restart: "no"
+
+  # ============== Confluent Schema Registry ==============
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.1
+    container_name: gis-schema-registry
+    ports:
+      - "8082:8081"     # SR 默认 8081 与 Flink UI 冲突，对外映射成 8082
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9094
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: _schemas
+      # 兼容性策略：BACKWARD 是默认，新 schema 必须能反序列化老数据
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ============== ZooKeeper（HA 协调器，单节点 dev 模式） ==============
+  zookeeper:
+    image: zookeeper:3.9
+    container_name: gis-zookeeper
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: "ruok,stat,mntr"
+      ZOO_TICK_TIME: 2000
+    volumes:
+      - zk-data:/data
+      - zk-datalog:/datalog
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep -q imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ============== Flink JobManager #1（leader 候选）==============
+  # HA 配置详解：
+  #   high-availability: zookeeper                 ← 启用 ZK 模式
+  #   high-availability.zookeeper.quorum           ← ZK 地址
+  #   high-availability.storageDir                 ← JobGraph/checkpoint 元数据持久化（必须共享）
+  #   high-availability.cluster-id                 ← 同一作业簇必须一致，多 JM 才能识别为同集群
+  # state.backend: rocksdb                         ← 升级为 RocksDB（embedded LSM）
+  # incremental checkpoints                        ← RocksDB 配套，只上传 SST diff，量大时显著降负载
+  # metrics.reporter.prom                          ← 启用 Prometheus 拉模式 reporter，端口 9249
+  jobmanager:
+    image: flink:1.19.3-scala_2.12-java11
+    container_name: gis-flink-jobmanager
+    user: root
+    ports:
+      - "8081:8081"
+      - "9249:9249"   # Prometheus scrape 端口
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        rest.address: jobmanager
+        rest.bind-address: 0.0.0.0
+        rest.flamegraph.enabled: true
+        # ---------- HA ----------
+        high-availability.type: zookeeper
+        high-availability.zookeeper.quorum: zookeeper:2181
+        high-availability.zookeeper.path.root: /flink
+        high-availability.cluster-id: /gis-sync
+        high-availability.storageDir: file:///flink-ha
+        # ---------- state / checkpoint ----------
+        state.backend.type: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///flink-checkpoints
+        state.savepoints.dir: file:///flink-savepoints
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        # ---------- restart ----------
+        restart-strategy: exponential-delay
+        restart-strategy.exponential-delay.initial-backoff: 10s
+        restart-strategy.exponential-delay.max-backoff: 2min
+        restart-strategy.exponential-delay.backoff-multiplier: 2.0
+        restart-strategy.exponential-delay.reset-backoff-threshold: 10min
+        # ---------- metrics ----------
+        metrics.reporters: prom
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+        metrics.reporter.prom.filterLabelValueCharacters: false
+    volumes:
+      - ../flink-jobs/target:/opt/flink/usrlib:ro
+      - ./flink-libs:/opt/flink/lib-extra:ro
+      - flink-checkpoints:/flink-checkpoints
+      - flink-savepoints:/flink-savepoints
+      - flink-ha:/flink-ha
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        chown -R flink:flink /flink-checkpoints /flink-savepoints /flink-ha
+        cp -n /opt/flink/lib-extra/*.jar /opt/flink/lib/ 2>/dev/null || true
+        # Prometheus reporter 是 plugin，必须 cp 到 plugins/ 才会被加载
+        mkdir -p /opt/flink/plugins/metrics-prometheus
+        cp -n /opt/flink/opt/flink-metrics-prometheus-*.jar /opt/flink/plugins/metrics-prometheus/ 2>/dev/null \
+          || cp /opt/flink/plugins/metrics-prometheus/*.jar /opt/flink/plugins/metrics-prometheus/ 2>/dev/null || true
+        exec gosu flink /docker-entrypoint.sh jobmanager
+    depends_on:
+      postgis-src:
+        condition: service_healthy
+      postgis-dst:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      zookeeper:
+        condition: service_healthy
+
+  # ============== Flink JobManager #2（standby）==============
+  # 共享 cluster-id 和 storageDir，与 #1 通过 ZK 选主。
+  # 实际运行时只有一个是 leader 处理请求，另一个 hot standby。
+  jobmanager2:
+    image: flink:1.19.3-scala_2.12-java11
+    container_name: gis-flink-jobmanager2
+    user: root
+    ports:
+      - "8181:8081"   # 第二个 UI 端口（leader 才提供有效响应）
+      - "9250:9249"   # 第二个 metrics 端口
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager2
+        rest.address: jobmanager2
+        rest.bind-address: 0.0.0.0
+        rest.flamegraph.enabled: true
+        high-availability.type: zookeeper
+        high-availability.zookeeper.quorum: zookeeper:2181
+        high-availability.zookeeper.path.root: /flink
+        high-availability.cluster-id: /gis-sync
+        high-availability.storageDir: file:///flink-ha
+        state.backend.type: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///flink-checkpoints
+        state.savepoints.dir: file:///flink-savepoints
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        restart-strategy: exponential-delay
+        restart-strategy.exponential-delay.initial-backoff: 10s
+        restart-strategy.exponential-delay.max-backoff: 2min
+        metrics.reporters: prom
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+        metrics.reporter.prom.filterLabelValueCharacters: false
+    volumes:
+      - ../flink-jobs/target:/opt/flink/usrlib:ro
+      - ./flink-libs:/opt/flink/lib-extra:ro
+      - flink-checkpoints:/flink-checkpoints
+      - flink-savepoints:/flink-savepoints
+      - flink-ha:/flink-ha
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        chown -R flink:flink /flink-checkpoints /flink-savepoints /flink-ha
+        cp -n /opt/flink/lib-extra/*.jar /opt/flink/lib/ 2>/dev/null || true
+        mkdir -p /opt/flink/plugins/metrics-prometheus
+        cp -n /opt/flink/opt/flink-metrics-prometheus-*.jar /opt/flink/plugins/metrics-prometheus/ 2>/dev/null || true
+        exec gosu flink /docker-entrypoint.sh jobmanager
+    depends_on:
+      jobmanager:
+        condition: service_started
+      zookeeper:
+        condition: service_healthy
+
+  # ============== Flink TaskManager ==============
+  # 通过 ZK 自己发现 leader JM，不再硬编码 jobmanager.rpc.address
+  taskmanager:
+    image: flink:1.19.3-scala_2.12-java11
+    container_name: gis-flink-taskmanager
+    user: root
+    ports:
+      - "9251:9249"   # taskmanager metrics
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        taskmanager.numberOfTaskSlots: 4
+        high-availability.type: zookeeper
+        high-availability.zookeeper.quorum: zookeeper:2181
+        high-availability.zookeeper.path.root: /flink
+        high-availability.cluster-id: /gis-sync
+        high-availability.storageDir: file:///flink-ha
+        state.backend.type: rocksdb
+        state.backend.incremental: true
+        state.checkpoints.dir: file:///flink-checkpoints
+        state.savepoints.dir: file:///flink-savepoints
+        metrics.reporters: prom
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+        metrics.reporter.prom.filterLabelValueCharacters: false
+    volumes:
+      - ../flink-jobs/target:/opt/flink/usrlib:ro
+      - ./flink-libs:/opt/flink/lib-extra:ro
+      - flink-checkpoints:/flink-checkpoints
+      - flink-savepoints:/flink-savepoints
+      - flink-ha:/flink-ha
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        chown -R flink:flink /flink-checkpoints /flink-savepoints /flink-ha
+        cp -n /opt/flink/lib-extra/*.jar /opt/flink/lib/ 2>/dev/null || true
+        mkdir -p /opt/flink/plugins/metrics-prometheus
+        cp -n /opt/flink/opt/flink-metrics-prometheus-*.jar /opt/flink/plugins/metrics-prometheus/ 2>/dev/null || true
+        exec gosu flink /docker-entrypoint.sh taskmanager
+    depends_on:
+      jobmanager:
+        condition: service_started
+      zookeeper:
+        condition: service_healthy
+
+  # ============== postgres_exporter（源库）==============
+  # 关键：自定义 query 暴露 pg_replication_slots 指标，业界 #1 监控项
+  postgres-exporter-src:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: gis-pgexp-src
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres@postgis-src:5432/geodb_src?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "false"
+    volumes:
+      - ./prometheus/postgres-queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    depends_on:
+      postgis-src:
+        condition: service_healthy
+
+  # ============== postgres_exporter（目标库）==============
+  postgres-exporter-dst:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: gis-pgexp-dst
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres@postgis-dst:5432/geodb_dst?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "false"
+    volumes:
+      - ./prometheus/postgres-queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    depends_on:
+      postgis-dst:
+        condition: service_healthy
+
+  # ============== kafka_exporter ==============
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    container_name: gis-kafka-exporter
+    command:
+      - --kafka.server=kafka:9094
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ============== Prometheus ==============
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: gis-prometheus
+    user: root
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle      # 支持 POST /-/reload 热加载
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - postgres-exporter-src
+      - postgres-exporter-dst
+      - kafka-exporter
+      - jobmanager
+
+  # ============== Grafana ==============
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: gis-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # ============== AlertManager ==============
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: gis-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+
+  # ============== Backend (Spring Boot 看板 API) ==============
+  backend:
+    image: eclipse-temurin:17-jre
+    container_name: gis-backend
+    ports:
+      - "8090:8090"
+    working_dir: /app
+    volumes:
+      - ../backend/target:/app:ro
+    environment:
+      JAVA_OPTS: "-Xms256m -Xmx512m"
+      PG_DST_HOST: postgis-dst
+      PG_DST_PORT: 5432
+      PG_DST_DB: geodb_dst
+      PG_DST_USER: postgres
+      PG_DST_PASSWORD: postgres
+      PG_SRC_HOST: postgis-src
+      PG_SRC_PORT: 5432
+      PG_SRC_DB: geodb_src
+      PG_SRC_USER: postgres
+      PG_SRC_PASSWORD: postgres
+      KAFKA_BOOTSTRAP: kafka:9094
+      SR_URL: http://schema-registry:8081
+      FLINK_REST: http://jobmanager:8081
+      CDC_TOPIC: spatial-data-cdc
+      DLQ_TOPIC: spatial-data-dlq
+    entrypoint:
+      - /bin/sh
+      - -c
+      - exec java $$JAVA_OPTS -jar gis-sync-backend-1.0-SNAPSHOT.jar
+    depends_on:
+      postgis-src:
+        condition: service_healthy
+      postgis-dst:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/actuator/health 2>/dev/null | grep -q UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # ============== Frontend (生产部署，profile 'prod' 才启) ==============
+  # 本地开发用 npm run dev（Vite dev server, 5173 端口），不需要这个容器。
+  # 想在容器里以"完整生产形态"跑前端：docker compose --profile prod up -d frontend
+  # 提前需要：cd frontend && npm install && npm run build
+  frontend:
+    image: nginx:1.27-alpine
+    container_name: gis-frontend
+    profiles: ["prod"]
+    ports:
+      - "8080:80"
+    volumes:
+      - ../frontend/dist:/usr/share/nginx/html:ro
+      - ./nginx-frontend.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgis-src-data:
+  postgis-dst-data:
+  flink-checkpoints:
+  flink-savepoints:
+  flink-ha:
+  kafka-data:
+  zk-data:
+  zk-datalog:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:

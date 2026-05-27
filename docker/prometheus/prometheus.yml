@@ -1,0 +1,50 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: gis-sync-local
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  # Flink 三个进程的 PrometheusReporter 端口
+  - job_name: flink-jm-leader
+    static_configs:
+      - targets: [jobmanager:9249]
+        labels: { component: jobmanager, role: primary }
+  - job_name: flink-jm-standby
+    static_configs:
+      - targets: [jobmanager2:9249]
+        labels: { component: jobmanager, role: standby }
+  - job_name: flink-tm
+    static_configs:
+      - targets: [taskmanager:9249]
+        labels: { component: taskmanager }
+
+  # PostGIS 双库 — postgres_exporter 默认 9187
+  # 关键查询是自定义的：复制槽 WAL 滞后量、表行数等，由 queries.yaml 提供
+  - job_name: postgres-src
+    static_configs:
+      - targets: [postgres-exporter-src:9187]
+        labels: { db: src }
+  - job_name: postgres-dst
+    static_configs:
+      - targets: [postgres-exporter-dst:9187]
+        labels: { db: dst }
+
+  # Kafka — broker JMX/topic/consumer 指标
+  - job_name: kafka
+    static_configs:
+      - targets: [kafka-exporter:9308]
+
+  # Prometheus 自身（看板能展示自己的健康度）
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

@@ -1,0 +1,114 @@
+groups:
+  # ======================================================
+  # PostgreSQL 复制槽监控（业界 #1 事故源）
+  # ======================================================
+  - name: postgres-replication
+    interval: 30s
+    rules:
+      - alert: ReplicationSlotInactive
+        expr: pg_replication_slots_active == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "复制槽 {{ $labels.slot_name }} 已不活跃 5 分钟"
+          description: "若长期不活跃，WAL 会持续堆积导致磁盘耗尽。立即检查 Flink Source Job 是否在跑。"
+
+      - alert: ReplicationSlotWALLagHigh
+        expr: pg_replication_slots_wal_retained_bytes > 1073741824   # 1 GiB
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "复制槽 {{ $labels.slot_name }} 滞后 WAL 超过 1 GiB"
+          description: "下游消费跟不上上游写入。检查 Sink Job 反压、Kafka 容量、目标库写入性能。"
+
+      - alert: ReplicationSlotWALLagCritical
+        expr: pg_replication_slots_wal_retained_bytes > 5368709120   # 5 GiB
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "复制槽 {{ $labels.slot_name }} 滞后 WAL 超过 5 GiB"
+          description: "源库磁盘风险。立即介入：要么恢复消费，要么 pg_drop_replication_slot 解除。"
+
+  # ======================================================
+  # Flink 作业级
+  # ======================================================
+  - name: flink-jobs
+    interval: 30s
+    rules:
+      - alert: FlinkJobNotRunning
+        expr: flink_jobmanager_job_uptime > 0 unless flink_jobmanager_job_uptime > 1000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Flink job {{ $labels.job_name }} 在重启循环或刚启动"
+          description: "uptime 持续低于 1s 表示频繁重启。看 TaskManager 日志找根因。"
+
+      - alert: FlinkCheckpointFailed
+        expr: rate(flink_jobmanager_job_numberOfFailedCheckpoints[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Flink job {{ $labels.job_name }} 最近 5 分钟有 checkpoint 失败"
+          description: "持续失败会丢 EOS 保证。检查目标库可达性、checkpoint 超时、状态大小。"
+
+      - alert: FlinkBackpressureHigh
+        expr: flink_taskmanager_job_task_isBackPressured == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Flink task {{ $labels.task_name }} 反压持续 5 分钟"
+          description: "下游消费跟不上。优先看 sink 端写入性能，再看是否要扩容并行度。"
+
+  # ======================================================
+  # Kafka topic / consumer
+  # ======================================================
+  - name: kafka
+    interval: 30s
+    rules:
+      - alert: KafkaConsumerGroupLagHigh
+        expr: kafka_consumergroup_lag > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka consumer group {{ $labels.consumergroup }} 滞后 > 10k 条"
+          description: "消费跟不上生产，看 Sink Job 处理速率与上游 ingestion rate。"
+
+      - alert: KafkaUnderReplicatedPartitions
+        expr: kafka_topic_partition_under_replicated_partition > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka topic {{ $labels.topic }} 有副本不同步"
+          description: "单 broker dev 模式下不会触发，多 broker 部署时需要立刻关注。"
+
+  # ======================================================
+  # 业务级（来自 P2.2 sync_metrics 表，由 postgres_exporter custom query 暴露）
+  # ======================================================
+  - name: sync-business
+    interval: 30s
+    rules:
+      - alert: SyncDlqRateHigh
+        expr: rate(gis_sync_records_dlq_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DLQ 速率 > 1 条/秒 持续 5 分钟"
+          description: "上游有大量坏数据。查 cdc_dlq 表看 error_class 分布，找根因。"
+
+      - alert: SyncEndToEndLatencyHigh
+        expr: gis_sync_p99_latency_ms > 30000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "端到端 P99 延迟 > 30s"
+          description: "源库写入到目标库可见的延迟过高。看 Flink 反压、Kafka lag、目标库性能。"

@@ -1,0 +1,142 @@
+{
+  "title": "GIS Sync Overview",
+  "uid": "gis-sync-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "源库复制槽（业界 #1 事故源）",
+      "gridPos": {"x":0,"y":0,"w":24,"h":1},
+      "id": 100
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "复制槽是否活跃",
+      "gridPos": {"x":0,"y":1,"w":6,"h":4},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "pg_replication_slots_active{db=\"src\"}", "legendFormat": "{{slot_name}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type":"value","options":{"0":{"text":"INACTIVE","color":"red"},"1":{"text":"ACTIVE","color":"green"}}}
+          ],
+          "color": {"mode":"thresholds"},
+          "thresholds": {"mode":"absolute","steps":[{"value":null,"color":"red"},{"value":1,"color":"green"}]}
+        }
+      },
+      "options": {"colorMode":"background","textMode":"value_and_name"}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "复制槽保留 WAL 字节（>1GiB 告警，>5GiB 紧急）",
+      "gridPos": {"x":6,"y":1,"w":18,"h":7},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "pg_replication_slots_wal_retained_bytes{db=\"src\"}", "legendFormat": "{{slot_name}}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {"mode":"absolute","steps":[
+            {"value":null,"color":"green"},
+            {"value":1073741824,"color":"yellow"},
+            {"value":5368709120,"color":"red"}
+          ]},
+          "custom": {"thresholdsStyle":{"mode":"area"}}
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "已确认 LSN 滞后",
+      "gridPos": {"x":0,"y":5,"w":6,"h":3},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "pg_replication_slots_confirmed_flush_lag_bytes{db=\"src\"}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "type": "row",
+      "title": "Flink 作业",
+      "gridPos": {"x":0,"y":8,"w":24,"h":1},
+      "id": 101
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "作业 uptime",
+      "gridPos": {"x":0,"y":9,"w":12,"h":4},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "flink_jobmanager_job_uptime{role=\"primary\"} / 1000", "legendFormat": "{{job_name}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Checkpoint 失败次数（应为 0）",
+      "gridPos": {"x":12,"y":9,"w":12,"h":4},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "flink_jobmanager_job_numberOfFailedCheckpoints{role=\"primary\"}", "legendFormat": "{{job_name}}"}
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Kafka",
+      "gridPos": {"x":0,"y":13,"w":24,"h":1},
+      "id": 102
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Topic 总消息数",
+      "gridPos": {"x":0,"y":14,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "sum by (topic) (kafka_topic_partition_current_offset)", "legendFormat": "{{topic}}"}
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Consumer Group Lag",
+      "gridPos": {"x":12,"y":14,"w":12,"h":7},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "sum by (consumergroup, topic) (kafka_consumergroup_lag)", "legendFormat": "{{consumergroup}} - {{topic}}"}
+      ]
+    },
+    {
+      "type": "row",
+      "title": "业务指标（来自 sync_metrics 表，需要 P2.2）",
+      "gridPos": {"x":0,"y":21,"w":24,"h":1},
+      "id": 103
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "成功 / DLQ 速率（5 分钟）",
+      "gridPos": {"x":0,"y":22,"w":24,"h":7},
+      "datasource": {"type":"prometheus","uid":"prometheus"},
+      "targets": [
+        {"expr": "rate(gis_sync_records_out_total[5m])", "legendFormat": "成功 - {{job_name}}"},
+        {"expr": "rate(gis_sync_records_dlq_total[5m])", "legendFormat": "DLQ - {{job_name}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+route:
+  receiver: default
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    - matchers: [severity = critical]
+      receiver: critical
+      continue: true
+
+receivers:
+  # 本地开发只 log，生产替换成 webhook / Slack / email / 钉钉
+  - name: default
+    webhook_configs:
+      - url: http://alertmanager:9093/-/no-op   # 占位，实际不发
+        send_resolved: false
+  - name: critical
+    webhook_configs:
+      - url: http://alertmanager:9093/-/no-op
+        send_resolved: true
+
+inhibit_rules:
+  # critical 触发时抑制同 alertname 的 warning，避免重复告警
+  - source_matchers: [severity = critical]
+    target_matchers: [severity = warning]
+    equal: [alertname]

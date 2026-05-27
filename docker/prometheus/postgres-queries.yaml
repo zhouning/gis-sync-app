@@ -1,0 +1,77 @@
+# postgres_exporter 自定义查询：业界推荐的复制槽 + 同步业务指标
+# 装载到 /etc/postgres_exporter/queries.yaml
+
+pg_replication_slots:
+  query: |
+    SELECT
+      slot_name,
+      coalesce(active::int, 0) as active,
+      coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint, 0) as wal_retained_bytes,
+      coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)::bigint, 0) as confirmed_flush_lag_bytes
+    FROM pg_replication_slots
+  master: true
+  metrics:
+    - slot_name:
+        usage: "LABEL"
+        description: "复制槽名"
+    - active:
+        usage: "GAUGE"
+        description: "复制槽是否活跃（1=有 consumer 连接）"
+    - wal_retained_bytes:
+        usage: "GAUGE"
+        description: "为该槽保留的 WAL 字节数（restart_lsn 到当前 LSN 的差距）"
+    - confirmed_flush_lag_bytes:
+        usage: "GAUGE"
+        description: "consumer 已确认 LSN 与当前 LSN 的差距"
+
+# 业务级：同步指标
+# - 计数类：5 分钟内 sum，给 Prometheus 算 rate()
+# - 延迟类：取最近一个窗口（避免 snapshot 阶段的"假延迟"污染聚合）
+gis_sync:
+  query: |
+    WITH counts AS (
+      SELECT
+        job_name,
+        coalesce(sum(records_in)::bigint, 0)  as records_in_total,
+        coalesce(sum(records_out)::bigint, 0) as records_out_total,
+        coalesce(sum(records_dlq)::bigint, 0) as records_dlq_total
+      FROM sync_metrics
+      WHERE window_start > NOW() - INTERVAL '5 minutes'
+      GROUP BY job_name
+    ),
+    latest AS (
+      SELECT DISTINCT ON (job_name)
+        job_name, p50_latency_ms, p99_latency_ms
+      FROM sync_metrics
+      WHERE window_start > NOW() - INTERVAL '5 minutes'
+        AND records_out > 0          -- 跳过纯 DLQ 或空窗口（无延迟可言）
+      ORDER BY job_name, window_start DESC
+    )
+    SELECT
+      c.job_name,
+      c.records_in_total,
+      c.records_out_total,
+      c.records_dlq_total,
+      coalesce(l.p50_latency_ms, 0)::bigint as p50_latency_ms,
+      coalesce(l.p99_latency_ms, 0)::bigint as p99_latency_ms
+    FROM counts c
+    LEFT JOIN latest l USING (job_name)
+  metrics:
+    - job_name:
+        usage: "LABEL"
+        description: "Flink 作业名"
+    - records_in_total:
+        usage: "COUNTER"
+        description: "最近 5 分钟入流记录数"
+    - records_out_total:
+        usage: "COUNTER"
+        description: "最近 5 分钟入目标库记录数"
+    - records_dlq_total:
+        usage: "COUNTER"
+        description: "最近 5 分钟进入 DLQ 记录数"
+    - p50_latency_ms:
+        usage: "GAUGE"
+        description: "最近一个窗口的 P50 端到端延迟（毫秒）"
+    - p99_latency_ms:
+        usage: "GAUGE"
+        description: "最近一个窗口的 P99 端到端延迟（毫秒）"

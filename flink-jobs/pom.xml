@@ -187,12 +187,13 @@
             <version>1.20.4</version>
             <scope>test</scope>
         </dependency>
-        <!-- Testcontainers 1.20 用了 commons-lang3.ArrayFill (3.13+ 才有)，
-             Flink 测试 classpath 上某个依赖会拽进更老版本，需显式声明 override。-->
+        <!-- Testcontainers 1.20.x 用了 commons-lang3 3.18+ 的 API：
+             ArrayFill (3.13+) / SystemProperties.getUserName(String) (3.18+) 等。
+             Flink 测试 classpath 上某个依赖会拽进更老版本，需显式 override。-->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>3.14.0</version>
+            <version>3.18.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>

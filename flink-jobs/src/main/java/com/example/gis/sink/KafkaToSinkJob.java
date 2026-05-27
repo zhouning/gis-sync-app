@@ -143,36 +143,68 @@ public class KafkaToSinkJob {
     /**
      * 从 Schema Registry 拉取 subject 最新 schema（HTTP REST）。
      * 不引 io.confluent SR client 依赖，避免 client 进程类加载冲突。
+     *
+     * <p>带重试：Sink Job 可能比 Source Job 先启动，那时 SR 还没注册过 schema
+     * （Source Job 第一次写 Kafka 才会自动注册）。最长等 60 秒。
      */
     private static Schema fetchLatestSchema(String srUrl, String subject) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(60);
+        Exception last = null;
+        while (System.nanoTime() < deadline) {
+            try {
+                return fetchSchemaOnce(srUrl, subject);
+            } catch (SubjectNotReadyException e) {
+                last = e;
+                try { Thread.sleep(2000); } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("interrupted while waiting for schema", ie);
+                }
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                    "Cannot fetch schema " + subject + " from " + srUrl, e);
+            }
+        }
+        throw new IllegalStateException(
+            "Schema " + subject + " not registered to SR within 60s "
+            + "(Source Job 还没启动？或没数据触发 schema 注册？)", last);
+    }
+
+    /** 单次调用：404 转成 SubjectNotReadyException 让外层重试，其他错直接抛。 */
+    private static Schema fetchSchemaOnce(String srUrl, String subject) throws Exception {
         String endpoint = srUrl.replaceAll("/$", "") + "/subjects/" + subject + "/versions/latest";
-        try {
-            HttpURLConnection conn = (HttpURLConnection) new URL(endpoint).openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("Accept", "application/vnd.schemaregistry.v1+json");
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(15000);
-            int code = conn.getResponseCode();
-            if (code != 200) {
-                throw new IllegalStateException("SR returned HTTP " + code + " for " + endpoint);
-            }
-            StringBuilder body = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) body.append(line);
-            }
-            // 极简提取 "schema":"..."（schema 字段是 JSON-escaped 字符串）
-            String json = body.toString();
-            int idx = json.indexOf("\"schema\":\"");
-            if (idx < 0) throw new IllegalStateException("schema field missing in: " + json);
-            int start = idx + "\"schema\":\"".length();
-            int end = findUnescapedQuote(json, start);
-            String escaped = json.substring(start, end);
-            String schemaStr = unescapeJsonString(escaped);
-            return new Schema.Parser().parse(schemaStr);
-        } catch (Exception e) {
-            throw new IllegalStateException("Cannot fetch schema " + subject + " from " + srUrl, e);
+        HttpURLConnection conn = (HttpURLConnection) new URL(endpoint).openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("Accept", "application/vnd.schemaregistry.v1+json");
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(15000);
+        int code = conn.getResponseCode();
+        if (code == 404) {
+            throw new SubjectNotReadyException(subject);
+        }
+        if (code != 200) {
+            throw new IllegalStateException("SR returned HTTP " + code + " for " + endpoint);
+        }
+        StringBuilder body = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) body.append(line);
+        }
+        // 极简提取 "schema":"..."（schema 字段是 JSON-escaped 字符串）
+        String json = body.toString();
+        int idx = json.indexOf("\"schema\":\"");
+        if (idx < 0) throw new IllegalStateException("schema field missing in: " + json);
+        int start = idx + "\"schema\":\"".length();
+        int end = findUnescapedQuote(json, start);
+        String escaped = json.substring(start, end);
+        String schemaStr = unescapeJsonString(escaped);
+        return new Schema.Parser().parse(schemaStr);
+    }
+
+    /** SR 返回 404：subject 还未注册。外层捕获后等待重试。 */
+    private static class SubjectNotReadyException extends RuntimeException {
+        SubjectNotReadyException(String subject) {
+            super("subject not yet registered: " + subject);
         }
     }
 

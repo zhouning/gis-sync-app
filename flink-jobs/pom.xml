@@ -19,7 +19,7 @@
         <flink.version>1.19.3</flink.version>
         <sedona.version>1.9.0</sedona.version>
         <flink.cdc.version>3.5.0</flink.cdc.version>
-        <flink.connector.jdbc.version>3.3.0-1.19</flink.connector.jdbc.version>
+        <flink.connector.jdbc.version>3.3.0-1.20</flink.connector.jdbc.version>
         <flink.connector.kafka.version>3.3.0-1.19</flink.connector.kafka.version>
         <postgresql.version>42.7.11</postgresql.version>
         <scala.binary.version>2.12</scala.binary.version>

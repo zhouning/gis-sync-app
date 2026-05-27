@@ -13,16 +13,18 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
-    # 全局 ignore：拦掉所有关键依赖的 major 升级。patch/minor 通过分组 PR 推送。
+    # 全局 ignore：拦掉所有关键依赖的版本变更。Flink/Sedona/CDC connector 版本号
+    # 互锁紧密——Sedona 1.9.0 钉死 flink.version=1.19.0，CDC 3.5 是最后兼容 1.19
+    # 的版本，flink-connector-jdbc/kafka 后缀 -1.19 也必须不变。
+    # 任何这类升级都需要人工"整套迁移"评估，禁止自动 PR。
     ignore:
+      # Apache Flink 整套（所有 update type 都禁，包括 patch，因为 jdbc/kafka
+      # connector 后缀变化会被 dependabot 当 patch 推送但实际是跨 Flink 版本）
       - dependency-name: "org.apache.flink:*"
-        update-types: ["version-update:semver-major"]
       - dependency-name: "org.apache.sedona:*"
-        update-types: ["version-update:semver-major"]
       - dependency-name: "org.geotools:*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "com.ververica:*"
-        update-types: ["version-update:semver-major"]
       # JUnit 6 要 Java 17，flink-jobs 是 Java 11，不能升 6
       - dependency-name: "org.junit.jupiter:*"
         update-types: ["version-update:semver-major"]

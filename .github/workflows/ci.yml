@@ -21,7 +21,7 @@ jobs:
       - name: Build (skip tests, fast)
         run: mvn -B -pl flink-jobs -am package -DskipTests
       - name: Upload Flink jar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flink-jar
           path: flink-jobs/target/gis-sync-app-*.jar
@@ -41,7 +41,7 @@ jobs:
       - name: Build
         run: mvn -B -pl backend -am package -DskipTests
       - name: Upload backend jar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-jar
           path: backend/target/gis-sync-backend-*.jar
@@ -65,7 +65,7 @@ jobs:
         working-directory: frontend
         run: npm run build
       - name: Upload dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: frontend/dist
@@ -92,7 +92,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "false"
       - name: Upload surefire/failsafe reports on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |

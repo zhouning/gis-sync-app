@@ -1,5 +1,15 @@
 # Build output
 target/
+flink-jobs/target/
+backend/target/
+flink-jobs/dependency-reduced-pom.xml
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Locally-fetched runtime jars (managed by docker/fetch-libs.sh)
+docker/flink-libs/
 
 # IDE files
 .idea/

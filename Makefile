@@ -179,6 +179,18 @@ demo-traffic:
 demo-traffic-fast:
 	INTERVAL=1 bash scripts/demo-traffic.sh
 
+# 加载真实 shapefile 到源库
+load-shp:
+	@if [ -z "$(SHP)" ]; then echo "usage: make load-shp SHP=/path/to.shp [LIMIT=1000] [INTERVAL=0.1] [START_ID=100000]"; exit 1; fi
+	python3 scripts/load-shp-to-src.py $(SHP) \
+	  $(if $(LIMIT),--limit $(LIMIT),) \
+	  $(if $(INTERVAL),--interval $(INTERVAL),) \
+	  $(if $(START_ID),--start-id $(START_ID),)
+
+# 多层完整性验证：判断同步是否成功
+verify:
+	bash scripts/verify-sync.sh $(if $(FROM),--expected-from $(FROM) --expected-to $(TO),) $(if $(SAMPLE),--sample $(SAMPLE),)
+
 # 取消所有 RUNNING 作业
 cancel-all:
 	@for jid in $$(curl -s http://localhost:8081/jobs | python3 -c "import json,sys;print(' '.join(j['id'] for j in json.load(sys.stdin)['jobs'] if j['status']=='RUNNING'))"); do \

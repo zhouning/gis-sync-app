@@ -6,13 +6,13 @@
 CREATE EXTENSION IF NOT EXISTS postgis;
 
 -- ============== 1. 同步结果表 ==============
--- 与源表同样的 id 主键，几何字段使用 Web Mercator (EPSG:3857)
--- 目标侧业务方按需查询此表（地图前端通常直接消费 3857）
+-- 几何列用 GEOMETRY(Geometry, ...) 支持任意几何类型（Point/Polygon/...）
+-- 与源表 spatial_data 一致，保证投影后类型不丢失
 CREATE TABLE IF NOT EXISTS spatial_data_xfm (
     id              INT PRIMARY KEY,
     name            TEXT,
-    geom_4326       GEOMETRY(Point, 4326),
-    geom_3857       GEOMETRY(Point, 3857) NOT NULL,
+    geom_4326       GEOMETRY(Geometry, 4326),
+    geom_3857       GEOMETRY(Geometry, 3857) NOT NULL,
     src_update_time TIMESTAMP(3),
     sync_time       TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

@@ -7,12 +7,31 @@ interface Props {
   liveEvents: CdcWsEvent[];
 }
 
-/** 从 EWKT "SRID=4326;POINT(116.4 39.9)" 抽出 [lon, lat]。 */
+/**
+ * 从 EWKT 抽出一个 [lon, lat] 用作地图 marker 位置。
+ *  - POINT(lon lat) 直接取
+ *  - POLYGON((...)) 取第一个外环的顶点平均值（近似 centroid，足够地图定位）
+ *  - MULTIPOLYGON 同理取第一个 polygon 第一个外环
+ */
 function parseEwkt(ewkt: string | null): [number, number] | null {
   if (!ewkt) return null;
-  const m = ewkt.match(/POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\)/i);
-  if (!m) return null;
-  return [parseFloat(m[1]), parseFloat(m[2])];
+  // POINT
+  const point = ewkt.match(/POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\)/i);
+  if (point) return [parseFloat(point[1]), parseFloat(point[2])];
+
+  // POLYGON / MULTIPOLYGON：抽出第一段 (lon lat, lon lat, ...)
+  const ring = ewkt.match(/\(\s*((?:-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?\s*,?\s*)+)\)/);
+  if (ring) {
+    const pairs = ring[1].split(',').map((s) => s.trim().split(/\s+/));
+    if (pairs.length === 0) return null;
+    let sx = 0, sy = 0;
+    for (const p of pairs) {
+      sx += parseFloat(p[0]);
+      sy += parseFloat(p[1]);
+    }
+    return [sx / pairs.length, sy / pairs.length];
+  }
+  return null;
 }
 
 export function MapPanel({ initialPoints, liveEvents }: Props) {

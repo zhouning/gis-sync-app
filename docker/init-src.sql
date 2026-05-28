@@ -5,11 +5,12 @@
 
 CREATE EXTENSION IF NOT EXISTS postgis;
 
--- 业务表：使用 PostGIS 原生 geometry 类型（WGS84 / EPSG:4326）
+-- 业务表：几何列用 GEOMETRY(Geometry, 4326) 支持任意几何类型（Point/Polygon/...）
+-- 选 Geometry 而非 Point 是为了能加载实际 GIS 数据（行政区划、地块图斑等多边形）
 CREATE TABLE IF NOT EXISTS spatial_data (
     id           INT PRIMARY KEY,
     name         TEXT,
-    geom         GEOMETRY(Point, 4326) NOT NULL,
+    geom         GEOMETRY(Geometry, 4326) NOT NULL,
     update_time  TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -43,7 +44,7 @@ ALTER TABLE spatial_data REPLICA IDENTITY FULL;
 DROP PUBLICATION IF EXISTS gis_pub;
 CREATE PUBLICATION gis_pub FOR TABLE spatial_data;
 
--- 种子数据
+-- 种子数据（点要素，验证 schema 兼容）
 INSERT INTO spatial_data (id, name, geom) VALUES
     (1, '北京天安门',  ST_SetSRID(ST_MakePoint(116.404, 39.915), 4326)),
     (2, '上海外滩',    ST_SetSRID(ST_MakePoint(121.473, 31.230), 4326)),

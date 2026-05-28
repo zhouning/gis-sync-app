@@ -69,11 +69,18 @@ public class DashboardService {
             limit);
     }
 
-    /** 取最近 N 条已同步成功的点，用于地图打点初始加载。 */
+    /**
+     * 取最近 N 条已同步成功的几何，用于地图打点初始加载。
+     * 任意几何（含 Polygon）都用 ST_Centroid 转成代表点，前端按 lon/lat 画 marker。
+     */
     public List<LivePoint> recentPoints(int limit) {
         return jdbc.query(
-            "SELECT id, name, ST_X(geom_4326) AS lon, ST_Y(geom_4326) AS lat, sync_time " +
+            "SELECT id, name, " +
+            "       ST_X(ST_Centroid(geom_4326)) AS lon, " +
+            "       ST_Y(ST_Centroid(geom_4326)) AS lat, " +
+            "       sync_time " +
             "  FROM spatial_data_xfm " +
+            " WHERE geom_4326 IS NOT NULL " +
             " ORDER BY sync_time DESC LIMIT ?",
             (rs, n) -> new LivePoint(
                 rs.getInt("id"),
